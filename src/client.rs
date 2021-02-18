@@ -45,6 +45,8 @@ impl SentinelClient {
     async fn find_master(&mut self) -> RedisResult<Connection> {
         let mut master: Option<RedisResult<_>> = None;
         for (index, sentinel_node) in self.sentinel_nodes.iter().enumerate() {
+            trace!("trying to connect to sentinel {:?}", sentinel_node);
+
             let res = self.find_master_using_sentinel(sentinel_node).await;
             let is_ok = res.is_ok();
             master = Some(res.map(|c| (index, c)));
@@ -105,7 +107,7 @@ impl SentinelClient {
             .query(sentinel_conn)?;
         let master_addr = format!("redis://{}:{}", master_addr, master_port);
 
-        trace!("got redis addr from sentinel: {}", master_addr);
+        trace!("got redis addr {} from sentinel", master_addr);
         master_addr.into_connection_info()
     }
 
@@ -124,6 +126,7 @@ impl SentinelClient {
             )));
         }
 
+        trace!("verified node {:?} as master", master_node);
         Ok(conn)
     }
 
