@@ -1,6 +1,8 @@
 use log::trace;
-use redis::{Client, ConnectionInfo, ErrorKind, IntoConnectionInfo, RedisError, RedisResult, aio::Connection};
-use std::time::Duration;
+use redis::{
+    aio::Connection, Client, ConnectionInfo, ErrorKind, IntoConnectionInfo, RedisError, RedisResult,
+};
+use std::{str::from_utf8, time::Duration};
 
 const SENTINEL_TIMEOUT: Duration = Duration::from_millis(1000);
 
@@ -117,17 +119,36 @@ impl SentinelClient {
     async fn verify_master_node(master_node: &Client) -> redis::RedisResult<Connection> {
         let mut conn = master_node.get_async_connection().await?;
 
-        let role: String = redis::cmd("ROLE").query_async(&mut conn).await?;
+        let role: redis::Value = redis::cmd("ROLE").query_async(&mut conn).await?;
 
-        if role != "master" {
-            return Err(RedisError::from((
+        // ROLE returns a complex response, so we cannot use the usual type-casting
+        if let redis::Value::Bulk(parts) = role {
+            match &parts[..] {
+                [redis::Value::Data(data), ..] => {
+                    let role = from_utf8(&data).unwrap_or("");
+                    if role == "master" {
+                        trace!("verified node {:?} as master", master_node);
+                        Ok(conn)
+                    } else {
+                        Err(RedisError::from((
+                            ErrorKind::ResponseError,
+                            "sentinel pointed to master node but the node is not master",
+                        )))
+                    }
+                }
+                parts => Err(RedisError::from((
+                    ErrorKind::ResponseError,
+                    "ROLE returned unexpected data format",
+                    format!("expected [string-data(_), ..], got {:?}", parts),
+                ))),
+            }
+        } else {
+            Err(RedisError::from((
                 ErrorKind::ResponseError,
-                "sentinel pointed to master node but the node is not master",
-            )));
+                "ROLE returned unexpected data format",
+                format!("expected bulk([string-data(_), _]), got {:?}", role),
+            )))
         }
-
-        trace!("verified node {:?} as master", master_node);
-        Ok(conn)
     }
 
     /// Returns the current `redis::aio::Connection` or tries to reconnected to
@@ -138,7 +159,7 @@ impl SentinelClient {
                 return Ok(conn);
             }
         }
-        
+
         self.find_master().await
     }
 }
